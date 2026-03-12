@@ -2,10 +2,13 @@ from http.server import BaseHTTPRequestHandler
 import json
 import os
 import re
+import urllib.request
 
 import tempfile
 
 import yt_dlp
+
+COBALT_API_URL = os.environ.get('COBALT_API_URL', 'https://api.cobalt.tools')
 
 
 def get_cookies_file():
@@ -15,12 +18,9 @@ def get_cookies_file():
     if not cookies_str:
         return None
 
-    # Auto-detect format
     if cookies_str.startswith('#') or '\t' in cookies_str:
-        # Already in Netscape format
         content = cookies_str
     else:
-        # Header format: name=value; name2=value2 (from Network tab)
         lines = ['# Netscape HTTP Cookie File', '']
         for part in cookies_str.split('; '):
             eq = part.find('=')
@@ -58,7 +58,72 @@ def sanitize_filename(name):
     return name[:200] if name else 'download'
 
 
+def get_download_url_cobalt(url, format_id):
+    """Use cobalt.tools API to get download URL for YouTube."""
+    # Parse cobalt format ID: cobalt-1080, cobalt-720, cobalt-audio-mp3, etc.
+    is_audio = 'audio' in format_id
+
+    if is_audio:
+        payload = {
+            'url': url,
+            'downloadMode': 'audio',
+            'audioFormat': 'mp3' if 'mp3' in format_id else 'best',
+        }
+    else:
+        # Extract resolution: cobalt-1080 → 1080
+        res_match = re.search(r'cobalt-(\d+)', format_id)
+        resolution = res_match.group(1) if res_match else '1080'
+        payload = {
+            'url': url,
+            'downloadMode': 'auto',
+            'videoQuality': resolution,
+        }
+
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f'{COBALT_API_URL}/',
+        data=data,
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0',
+        },
+        method='POST',
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode())
+
+    status = result.get('status')
+
+    if status == 'tunnel' or status == 'redirect':
+        download_url = result.get('url')
+        if download_url:
+            ext = 'mp3' if is_audio and 'mp3' in format_id else 'mp4'
+            return {
+                'url': download_url,
+                'filename': f'download.{ext}',
+            }
+
+    if status == 'picker' and result.get('picker'):
+        # Multiple items (e.g., carousel) - return the first one
+        first = result['picker'][0]
+        download_url = first.get('url')
+        if download_url:
+            return {
+                'url': download_url,
+                'filename': 'download.mp4',
+            }
+
+    error_text = result.get('error', {}).get('code', 'unknown error')
+    raise Exception(f'Cobalt API error: {error_text}')
+
+
 def get_download_url(url, format_id):
+    # If this is a cobalt format, use cobalt API directly
+    if format_id.startswith('cobalt-'):
+        return get_download_url_cobalt(url, format_id)
+
     platform = detect_platform(url)
 
     base_opts = {
@@ -68,6 +133,10 @@ def get_download_url(url, format_id):
         'no_playlist': True,
         'format': format_id,
     }
+
+    proxy = os.environ.get('PROXY_URL', '').strip()
+    if proxy:
+        base_opts['proxy'] = proxy
 
     if platform != 'YouTube':
         cookies_file = get_cookies_file()
@@ -83,18 +152,9 @@ def get_download_url(url, format_id):
                 except OSError:
                     pass
     else:
-        # YouTube: try multiple strategies in order
+        # YouTube: try yt-dlp strategies
         strategies = [
             {
-                'name': 'tv_embedded (no cookies)',
-                'extractor_args': {'youtube': {
-                    'player_client': ['tv_embedded'],
-                    'player_skip': ['webpage'],
-                }},
-                'use_cookies': False,
-            },
-            {
-                'name': 'mediaconnect + cookies',
                 'extractor_args': {'youtube': {
                     'player_client': ['mediaconnect'],
                     'player_skip': ['webpage'],
@@ -102,22 +162,12 @@ def get_download_url(url, format_id):
                 'use_cookies': True,
             },
             {
-                'name': 'web_creator + cookies',
                 'extractor_args': {'youtube': {
                     'player_client': ['web_creator'],
                 }},
                 'use_cookies': True,
             },
             {
-                'name': 'android + cookies',
-                'extractor_args': {'youtube': {
-                    'player_client': ['android'],
-                    'player_skip': ['webpage'],
-                }},
-                'use_cookies': True,
-            },
-            {
-                'name': 'mediaconnect (no cookies)',
                 'extractor_args': {'youtube': {
                     'player_client': ['mediaconnect'],
                     'player_skip': ['webpage'],
@@ -138,7 +188,7 @@ def get_download_url(url, format_id):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                break  # success
+                break
             except Exception as e:
                 last_err = e
             finally:

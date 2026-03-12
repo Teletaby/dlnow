@@ -5,13 +5,15 @@ import hmac
 import hashlib
 import time
 import base64
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
+import urllib.request
 
 import tempfile
 
 import yt_dlp
 
 SECRET = os.environ.get('CAPTCHA_SECRET', 'dlnow-captcha-secret-2026-change-me')
+COBALT_API_URL = os.environ.get('COBALT_API_URL', 'https://api.cobalt.tools')
 
 
 def get_cookies_file():
@@ -23,10 +25,8 @@ def get_cookies_file():
 
     # Auto-detect format
     if cookies_str.startswith('#') or '\t' in cookies_str:
-        # Already in Netscape format
         content = cookies_str
     else:
-        # Header format: name=value; name2=value2 (from Network tab)
         lines = ['# Netscape HTTP Cookie File', '']
         for part in cookies_str.split('; '):
             eq = part.find('=')
@@ -59,7 +59,6 @@ def validate_captcha(token, user_answer):
         nonce = data['n']
         signature = data['s']
 
-        # Expired? (5 min TTL)
         if time.time() - timestamp > 300:
             return False
 
@@ -112,64 +111,72 @@ def process_formats(info):
         ext = f.get('ext') or 'mp4'
         fid = f.get('format_id', '')
 
-        # Pre-merged video + audio (usually up to 720p)
         if has_video and has_audio:
             label = f'Video - {height}p ({ext.upper()})' if height else f'Video ({ext.upper()})'
             key = f'v-merged-{height}-{ext}'
             if key not in seen:
                 seen.add(key)
-                formats.append({
-                    'id': fid,
-                    'label': label,
-                    'type': 'video',
-                    '_sort': height,
-                })
+                formats.append({'id': fid, 'label': label, 'type': 'video', '_sort': height})
 
-        # High-res video-only (1080p+, no audio track)
         elif has_video and not has_audio and height >= 1080:
             label = f'Video - {height}p ({ext.upper()}, no audio)'
             key = f'v-only-{height}-{ext}'
             if key not in seen:
                 seen.add(key)
-                formats.append({
-                    'id': fid,
-                    'label': label,
-                    'type': 'video',
-                    '_sort': height,
-                })
+                formats.append({'id': fid, 'label': label, 'type': 'video', '_sort': height})
 
-        # Audio-only
         elif has_audio and not has_video:
             abr_int = int(abr) if abr else 0
-            label = (
-                f'Audio - {ext.upper()} ({abr_int}kbps)'
-                if abr_int
-                else f'Audio ({ext.upper()})'
-            )
+            label = f'Audio - {ext.upper()} ({abr_int}kbps)' if abr_int else f'Audio ({ext.upper()})'
             key = f'a-{abr_int}-{ext}'
             if key not in seen:
                 seen.add(key)
-                formats.append({
-                    'id': fid,
-                    'label': label,
-                    'type': 'audio',
-                    '_sort': abr_int,
-                })
+                formats.append({'id': fid, 'label': label, 'type': 'audio', '_sort': abr_int})
 
-    video_fmts = sorted(
-        [f for f in formats if f['type'] == 'video'],
-        key=lambda x: x['_sort'], reverse=True,
-    )
-    audio_fmts = sorted(
-        [f for f in formats if f['type'] == 'audio'],
-        key=lambda x: x['_sort'], reverse=True,
-    )
+    video_fmts = sorted([f for f in formats if f['type'] == 'video'], key=lambda x: x['_sort'], reverse=True)
+    audio_fmts = sorted([f for f in formats if f['type'] == 'audio'], key=lambda x: x['_sort'], reverse=True)
 
-    return [
-        {'id': f['id'], 'label': f['label'], 'type': f['type']}
-        for f in video_fmts + audio_fmts
-    ]
+    return [{'id': f['id'], 'label': f['label'], 'type': f['type']} for f in video_fmts + audio_fmts]
 
+
+# ──── YouTube oEmbed + Cobalt fallback ────
+
+def get_youtube_info_cobalt(url):
+    """Fallback: use YouTube oEmbed for metadata + preset cobalt format options."""
+    oembed_url = f'https://www.youtube.com/oembed?url={quote(url, safe="")}&format=json'
+    req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        title = data.get('title', 'Unknown')
+        thumbnail = data.get('thumbnail_url', '')
+        uploader = data.get('author_name', 'Unknown')
+    except Exception:
+        title = 'YouTube Video'
+        thumbnail = ''
+        uploader = 'Unknown'
+
+    return {
+        'title': title,
+        'thumbnail': thumbnail,
+        'duration': 0,
+        'uploader': uploader,
+        'cobalt': True,
+        'formats': [
+            {'id': 'cobalt-2160', 'label': 'Video - 2160p (4K)', 'type': 'video'},
+            {'id': 'cobalt-1440', 'label': 'Video - 1440p (2K)', 'type': 'video'},
+            {'id': 'cobalt-1080', 'label': 'Video - 1080p', 'type': 'video'},
+            {'id': 'cobalt-720', 'label': 'Video - 720p', 'type': 'video'},
+            {'id': 'cobalt-480', 'label': 'Video - 480p', 'type': 'video'},
+            {'id': 'cobalt-360', 'label': 'Video - 360p', 'type': 'video'},
+            {'id': 'cobalt-audio-mp3', 'label': 'Audio - MP3 (128kbps)', 'type': 'audio'},
+            {'id': 'cobalt-audio-best', 'label': 'Audio - Best Quality', 'type': 'audio'},
+        ],
+    }
+
+
+# ──── Main get_video_info ────
 
 def get_video_info(url, platform):
     base_opts = {
@@ -178,6 +185,10 @@ def get_video_info(url, platform):
         'no_color': True,
         'no_playlist': True,
     }
+
+    proxy = os.environ.get('PROXY_URL', '').strip()
+    if proxy:
+        base_opts['proxy'] = proxy
 
     if platform != 'YouTube':
         cookies_file = get_cookies_file()
@@ -193,18 +204,8 @@ def get_video_info(url, platform):
                 except OSError:
                     pass
     else:
-        # YouTube: try multiple strategies in order
+        # YouTube: try yt-dlp strategies first, then cobalt fallback
         strategies = [
-            # 1. tv_embedded - often works without auth for non-restricted videos
-            {
-                'name': 'tv_embedded (no cookies)',
-                'extractor_args': {'youtube': {
-                    'player_client': ['tv_embedded'],
-                    'player_skip': ['webpage'],
-                }},
-                'use_cookies': False,
-            },
-            # 2. mediaconnect with cookies
             {
                 'name': 'mediaconnect + cookies',
                 'extractor_args': {'youtube': {
@@ -213,7 +214,6 @@ def get_video_info(url, platform):
                 }},
                 'use_cookies': True,
             },
-            # 3. web_creator with cookies
             {
                 'name': 'web_creator + cookies',
                 'extractor_args': {'youtube': {
@@ -221,16 +221,6 @@ def get_video_info(url, platform):
                 }},
                 'use_cookies': True,
             },
-            # 4. android with cookies
-            {
-                'name': 'android + cookies',
-                'extractor_args': {'youtube': {
-                    'player_client': ['android'],
-                    'player_skip': ['webpage'],
-                }},
-                'use_cookies': True,
-            },
-            # 5. mediaconnect without cookies
             {
                 'name': 'mediaconnect (no cookies)',
                 'extractor_args': {'youtube': {
@@ -241,10 +231,7 @@ def get_video_info(url, platform):
             },
         ]
 
-        errors = []
         info = None
-        has_cookies = bool(os.environ.get('YT_COOKIES', '').strip())
-
         for strat in strategies:
             opts = {**base_opts, 'extractor_args': strat['extractor_args']}
             cookies_file = None
@@ -255,9 +242,9 @@ def get_video_info(url, platform):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                break  # success
-            except Exception as e:
-                errors.append(f"{strat['name']}: {str(e)[:100]}")
+                break
+            except Exception:
+                pass
             finally:
                 if cookies_file:
                     try:
@@ -265,13 +252,9 @@ def get_video_info(url, platform):
                     except OSError:
                         pass
 
+        # All yt-dlp strategies failed → use cobalt fallback
         if info is None:
-            cookie_status = f'cookies={"present" if has_cookies else "missing"}'
-            all_errors = '; '.join(errors[-2:])  # show last 2 errors
-            raise Exception(
-                f'YouTube extraction failed ({cookie_status}). '
-                f'Tried {len(strategies)} strategies. Last errors: {all_errors}'
-            )
+            return get_youtube_info_cobalt(url)
 
     return {
         'title': info.get('title') or 'Unknown',
@@ -300,7 +283,6 @@ class handler(BaseHTTPRequestHandler):
             token = body.get('captchaToken', '')
             answer = body.get('captchaAnswer', '')
 
-            # Validate captcha
             if not validate_captcha(token, answer):
                 return _json_response(self, 400, {
                     'error': 'Invalid or expired captcha. Please try again.',
@@ -308,9 +290,7 @@ class handler(BaseHTTPRequestHandler):
                 })
 
             if not url:
-                return _json_response(self, 400, {
-                    'error': 'Please provide a URL.',
-                })
+                return _json_response(self, 400, {'error': 'Please provide a URL.'})
 
             if not is_allowed(url):
                 return _json_response(self, 400, {
