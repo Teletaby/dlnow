@@ -3,4 +3,6 @@ downloads/
 .env
 *.log
 .DS_Store
+.venv/
+__pycache__/
 Thumbs.db
