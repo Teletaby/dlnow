@@ -71,7 +71,10 @@ def get_download_url(url, format_id):
 
     if platform == 'YouTube':
         ydl_opts['extractor_args'] = {
-            'youtube': {'player_client': ['mediaconnect']}
+            'youtube': {
+                'player_client': ['mediaconnect'],
+                'player_skip': ['webpage'],
+            }
         }
 
     cookies_file = get_cookies_file()
