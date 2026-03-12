@@ -9,12 +9,31 @@ import yt_dlp
 
 
 def get_cookies_file():
-    """Write YT_COOKIES env var to a temp file for yt-dlp."""
-    cookies = os.environ.get('YT_COOKIES', '').strip()
-    if not cookies:
+    """Write YT_COOKIES env var to a temp file for yt-dlp.
+    Auto-detects Netscape format vs browser header format (name=value; name=value)."""
+    cookies_str = os.environ.get('YT_COOKIES', '').strip()
+    if not cookies_str:
         return None
+
+    # Auto-detect format
+    if cookies_str.startswith('#') or '\t' in cookies_str:
+        # Already in Netscape format
+        content = cookies_str
+    else:
+        # Header format: name=value; name2=value2 (from Network tab)
+        lines = ['# Netscape HTTP Cookie File', '']
+        for part in cookies_str.split('; '):
+            eq = part.find('=')
+            if eq == -1:
+                continue
+            name = part[:eq].strip()
+            value = part[eq + 1:]
+            secure = 'TRUE' if name.startswith('__Secure') else 'FALSE'
+            lines.append(f'.youtube.com\tTRUE\t/\t{secure}\t0\t{name}\t{value}')
+        content = '\n'.join(lines) + '\n'
+
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    tmp.write(cookies)
+    tmp.write(content)
     tmp.close()
     return tmp.name
 
