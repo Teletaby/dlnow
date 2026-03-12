@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  dlnow:
+    build: .
+    container_name: dlnow
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    volumes:
+      - downloads:/app/downloads
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+
+volumes:
+  downloads:
