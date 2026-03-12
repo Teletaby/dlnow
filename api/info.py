@@ -193,39 +193,58 @@ def get_video_info(url, platform):
                 except OSError:
                     pass
     else:
-        # YouTube: try multiple strategies
+        # YouTube: try multiple strategies in order
         strategies = [
+            # 1. tv_embedded - often works without auth for non-restricted videos
             {
+                'name': 'tv_embedded (no cookies)',
+                'extractor_args': {'youtube': {
+                    'player_client': ['tv_embedded'],
+                    'player_skip': ['webpage'],
+                }},
+                'use_cookies': False,
+            },
+            # 2. mediaconnect with cookies
+            {
+                'name': 'mediaconnect + cookies',
                 'extractor_args': {'youtube': {
                     'player_client': ['mediaconnect'],
-                    'player_skip': ['webpage', 'configs'],
-                }},
-                'use_cookies': True,
-            },
-            {
-                'extractor_args': {'youtube': {
-                    'player_client': ['web_creator'],
                     'player_skip': ['webpage'],
                 }},
                 'use_cookies': True,
             },
+            # 3. web_creator with cookies
             {
-                'extractor_args': {'youtube': {
-                    'player_client': ['mediaconnect'],
-                    'player_skip': ['webpage', 'configs'],
-                }},
-                'use_cookies': False,
-            },
-            {
+                'name': 'web_creator + cookies',
                 'extractor_args': {'youtube': {
                     'player_client': ['web_creator'],
+                }},
+                'use_cookies': True,
+            },
+            # 4. android with cookies
+            {
+                'name': 'android + cookies',
+                'extractor_args': {'youtube': {
+                    'player_client': ['android'],
+                    'player_skip': ['webpage'],
+                }},
+                'use_cookies': True,
+            },
+            # 5. mediaconnect without cookies
+            {
+                'name': 'mediaconnect (no cookies)',
+                'extractor_args': {'youtube': {
+                    'player_client': ['mediaconnect'],
+                    'player_skip': ['webpage'],
                 }},
                 'use_cookies': False,
             },
         ]
 
-        last_err = None
+        errors = []
         info = None
+        has_cookies = bool(os.environ.get('YT_COOKIES', '').strip())
+
         for strat in strategies:
             opts = {**base_opts, 'extractor_args': strat['extractor_args']}
             cookies_file = None
@@ -238,7 +257,7 @@ def get_video_info(url, platform):
                     info = ydl.extract_info(url, download=False)
                 break  # success
             except Exception as e:
-                last_err = e
+                errors.append(f"{strat['name']}: {str(e)[:100]}")
             finally:
                 if cookies_file:
                     try:
@@ -247,7 +266,12 @@ def get_video_info(url, platform):
                         pass
 
         if info is None:
-            raise last_err or Exception('All YouTube strategies failed')
+            cookie_status = f'cookies={"present" if has_cookies else "missing"}'
+            all_errors = '; '.join(errors[-2:])  # show last 2 errors
+            raise Exception(
+                f'YouTube extraction failed ({cookie_status}). '
+                f'Tried {len(strategies)} strategies. Last errors: {all_errors}'
+            )
 
     return {
         'title': info.get('title') or 'Unknown',

@@ -83,32 +83,44 @@ def get_download_url(url, format_id):
                 except OSError:
                     pass
     else:
-        # YouTube: try multiple strategies
+        # YouTube: try multiple strategies in order
         strategies = [
             {
+                'name': 'tv_embedded (no cookies)',
                 'extractor_args': {'youtube': {
-                    'player_client': ['mediaconnect'],
-                    'player_skip': ['webpage', 'configs'],
+                    'player_client': ['tv_embedded'],
+                    'player_skip': ['webpage'],
                 }},
-                'use_cookies': True,
+                'use_cookies': False,
             },
             {
+                'name': 'mediaconnect + cookies',
                 'extractor_args': {'youtube': {
-                    'player_client': ['web_creator'],
+                    'player_client': ['mediaconnect'],
                     'player_skip': ['webpage'],
                 }},
                 'use_cookies': True,
             },
             {
-                'extractor_args': {'youtube': {
-                    'player_client': ['mediaconnect'],
-                    'player_skip': ['webpage', 'configs'],
-                }},
-                'use_cookies': False,
-            },
-            {
+                'name': 'web_creator + cookies',
                 'extractor_args': {'youtube': {
                     'player_client': ['web_creator'],
+                }},
+                'use_cookies': True,
+            },
+            {
+                'name': 'android + cookies',
+                'extractor_args': {'youtube': {
+                    'player_client': ['android'],
+                    'player_skip': ['webpage'],
+                }},
+                'use_cookies': True,
+            },
+            {
+                'name': 'mediaconnect (no cookies)',
+                'extractor_args': {'youtube': {
+                    'player_client': ['mediaconnect'],
+                    'player_skip': ['webpage'],
                 }},
                 'use_cookies': False,
             },
