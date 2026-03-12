@@ -1,0 +1,10 @@
+node_modules/
+downloads/
+server.js
+package.json
+package-lock.json
+Dockerfile
+docker-compose.yml
+.env
+.env.example
+.venv/
