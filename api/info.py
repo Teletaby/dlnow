@@ -172,34 +172,82 @@ def process_formats(info):
 
 
 def get_video_info(url, platform):
-    ydl_opts = {
+    base_opts = {
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
         'no_playlist': True,
     }
 
-    if platform == 'YouTube':
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['mediaconnect'],
-                'player_skip': ['webpage'],
-            }
-        }
-
-    cookies_file = get_cookies_file()
-    if cookies_file:
-        ydl_opts['cookiefile'] = cookies_file
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    finally:
+    if platform != 'YouTube':
+        cookies_file = get_cookies_file()
         if cookies_file:
+            base_opts['cookiefile'] = cookies_file
+        try:
+            with yt_dlp.YoutubeDL(base_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        finally:
+            if cookies_file:
+                try:
+                    os.unlink(cookies_file)
+                except OSError:
+                    pass
+    else:
+        # YouTube: try multiple strategies
+        strategies = [
+            {
+                'extractor_args': {'youtube': {
+                    'player_client': ['mediaconnect'],
+                    'player_skip': ['webpage', 'configs'],
+                }},
+                'use_cookies': True,
+            },
+            {
+                'extractor_args': {'youtube': {
+                    'player_client': ['web_creator'],
+                    'player_skip': ['webpage'],
+                }},
+                'use_cookies': True,
+            },
+            {
+                'extractor_args': {'youtube': {
+                    'player_client': ['mediaconnect'],
+                    'player_skip': ['webpage', 'configs'],
+                }},
+                'use_cookies': False,
+            },
+            {
+                'extractor_args': {'youtube': {
+                    'player_client': ['web_creator'],
+                }},
+                'use_cookies': False,
+            },
+        ]
+
+        last_err = None
+        info = None
+        for strat in strategies:
+            opts = {**base_opts, 'extractor_args': strat['extractor_args']}
+            cookies_file = None
+            if strat['use_cookies']:
+                cookies_file = get_cookies_file()
+                if cookies_file:
+                    opts['cookiefile'] = cookies_file
             try:
-                os.unlink(cookies_file)
-            except OSError:
-                pass
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break  # success
+            except Exception as e:
+                last_err = e
+            finally:
+                if cookies_file:
+                    try:
+                        os.unlink(cookies_file)
+                    except OSError:
+                        pass
+
+        if info is None:
+            raise last_err or Exception('All YouTube strategies failed')
 
     return {
         'title': info.get('title') or 'Unknown',
