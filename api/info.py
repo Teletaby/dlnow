@@ -7,9 +7,22 @@ import time
 import base64
 from urllib.parse import urlparse
 
+import tempfile
+
 import yt_dlp
 
 SECRET = os.environ.get('CAPTCHA_SECRET', 'dlnow-captcha-secret-2026-change-me')
+
+
+def get_cookies_file():
+    """Write YT_COOKIES env var to a temp file for yt-dlp."""
+    cookies = os.environ.get('YT_COOKIES', '').strip()
+    if not cookies:
+        return None
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    tmp.write(cookies)
+    tmp.close()
+    return tmp.name
 
 ALLOWED_HOSTS = {
     'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be',
@@ -152,8 +165,19 @@ def get_video_info(url, platform):
             'youtube': {'player_client': ['mediaconnect']}
         }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    cookies_file = get_cookies_file()
+    if cookies_file:
+        ydl_opts['cookiefile'] = cookies_file
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    finally:
+        if cookies_file:
+            try:
+                os.unlink(cookies_file)
+            except OSError:
+                pass
 
     return {
         'title': info.get('title') or 'Unknown',

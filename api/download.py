@@ -3,7 +3,20 @@ import json
 import os
 import re
 
+import tempfile
+
 import yt_dlp
+
+
+def get_cookies_file():
+    """Write YT_COOKIES env var to a temp file for yt-dlp."""
+    cookies = os.environ.get('YT_COOKIES', '').strip()
+    if not cookies:
+        return None
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    tmp.write(cookies)
+    tmp.close()
+    return tmp.name
 
 
 def detect_platform(url):
@@ -42,36 +55,47 @@ def get_download_url(url, format_id):
             'youtube': {'player_client': ['mediaconnect']}
         }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    cookies_file = get_cookies_file()
+    if cookies_file:
+        ydl_opts['cookiefile'] = cookies_file
 
-        # Direct URL from top-level info
-        direct_url = info.get('url')
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    finally:
+        if cookies_file:
+            try:
+                os.unlink(cookies_file)
+            except OSError:
+                pass
 
-        # Some formats come via requested_formats (merged streams)
-        if not direct_url and 'requested_formats' in info:
-            for rf in info['requested_formats']:
-                if rf.get('url'):
-                    direct_url = rf['url']
-                    break
+    # Direct URL from top-level info
+    direct_url = info.get('url')
 
-        # Fallback: search the formats list
-        if not direct_url:
-            for f in info.get('formats', []):
-                if f.get('format_id') == format_id and f.get('url'):
-                    direct_url = f['url']
-                    break
+    # Some formats come via requested_formats (merged streams)
+    if not direct_url and 'requested_formats' in info:
+        for rf in info['requested_formats']:
+            if rf.get('url'):
+                direct_url = rf['url']
+                break
 
-        if not direct_url:
-            raise Exception('Could not extract download URL for this format')
+    # Fallback: search the formats list
+    if not direct_url:
+        for f in info.get('formats', []):
+            if f.get('format_id') == format_id and f.get('url'):
+                direct_url = f['url']
+                break
 
-        title = sanitize_filename(info.get('title') or 'download')
-        ext = info.get('ext') or 'mp4'
+    if not direct_url:
+        raise Exception('Could not extract download URL for this format')
 
-        return {
-            'url': direct_url,
-            'filename': f'{title}.{ext}',
-        }
+    title = sanitize_filename(info.get('title') or 'download')
+    ext = info.get('ext') or 'mp4'
+
+    return {
+        'url': direct_url,
+        'filename': f'{title}.{ext}',
+    }
 
 
 def _json_response(self, code, obj):
